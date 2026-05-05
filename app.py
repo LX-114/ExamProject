@@ -13,223 +13,189 @@ COURSES_FILE = "courses_config.json"
 DATABASE_FILE = "database.json"
 
 # ========================================================
-# 2. 数据持久化助手函数 (统一使用 utf-8-sig)
+# 2. 数据持久化助手函数
 # ========================================================
 def load_courses():
-    """加载课程配置"""
     if os.path.exists(COURSES_FILE):
         with open(COURSES_FILE, "r", encoding="utf-8-sig") as f:
             return json.load(f)
-    # 默认课程列表
     default_courses = {
         "领导力": "https://cdcas.suwankj.com/user/exam?nodeId=1841638&examId=1016116",
-        "营养学": "https://cdcas.suwankj.com/user/exam?nodeId=1841541&examId=1016123",
-        "生态学": "https://cdcas.suwankj.com/user/exam?nodeId=1847312&examId=1016124",
-        "沟通理论与技巧": "https://cdcas.suwankj.com/user/exam?nodeId=1847310&examId=1016131",
-        "低碳能源": "https://cdcas.suwankj.com/user/exam?nodeId=1841648&examId=1016128"
+        "营养学": "https://cdcas.suwankj.com/user/exam?nodeId=1841541&examId=1016123"
     }
     save_courses(default_courses)
     return default_courses
 
 def save_courses(courses_dict):
-    """保存课程配置"""
     with open(COURSES_FILE, "w", encoding="utf-8") as f:
         json.dump(courses_dict, f, ensure_ascii=False, indent=4)
 
 def load_data():
-    """加载本地题库数据"""
     if os.path.exists(DATABASE_FILE):
         with open(DATABASE_FILE, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     return []
 
 def save_data(data):
-    """保存题库数据"""
     with open(DATABASE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 # ========================================================
-# 3. 核心爬虫类 (增强调试与容错版)
+# 3. 核心爬虫类 (支持传入账号对象)
 # ========================================================
 class AutoExamScraper:
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
+    def __init__(self, account_info):
+        self.username = account_info['u']
+        self.password = account_info['p']
         self.base_url = "https://cdcas.suwankj.com"
         self.session = requests.Session()
         self.ocr = ddddocr.DdddOcr(show_ad=False)
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...',
             'X-Requested-With': 'XMLHttpRequest'
         }
 
     def login(self):
-        """执行登录并捕获非JSON异常响应"""
         try:
             self.session.cookies.clear()
-            # 1. 获取验证码
             resp_code = self.session.get(f"{self.base_url}/service/code", timeout=10)
-            if resp_code.status_code != 200:
-                return False, f"验证码接口异常，状态码: {resp_code.status_code}"
-                
             captcha_text = self.ocr.classification(resp_code.content)
-            
-            # 2. 提交登录
-            login_data = {
-                "username": self.username, 
-                "password": self.password, 
-                "code": captcha_text, 
-                "redirect": ""
-            }
+            login_data = {"username": self.username, "password": self.password, "code": captcha_text, "redirect": ""}
             resp = self.session.post(f"{self.base_url}/user/login", data=login_data, headers=self.headers, timeout=10)
-            
-            # 3. 结果解析
-            try:
-                # 优先处理 BOM 字符
-                decoded_text = resp.content.decode('utf-8-sig')
-                if not decoded_text.strip():
-                    return False, "服务器返回了空内容"
-                
-                # 尝试解析 JSON
-                res_json = json.loads(decoded_text)
-                return res_json.get('status'), res_json.get('msg', '未知错误')
-                
-            except json.JSONDecodeError:
-                # 如果解析失败，获取页面预览用于排查（可能是防火墙拦截）
-                preview = resp.text[:100].replace('\n', ' ')
-                return False, f"接口未返回JSON (可能被拦截/重定向): {preview}..."
-                
+            decoded_text = resp.content.decode('utf-8-sig')
+            res_json = json.loads(decoded_text)
+            return res_json.get('status'), res_json.get('msg', '未知错误')
         except Exception as e:
-            return False, f"网络连接异常: {str(e)}"
+            return False, f"网络异常: {str(e)}"
 
     def fetch_data(self, url, course_name):
-        """解析网页题目数据"""
         try:
             resp = self.session.get(url, timeout=15)
             soup = BeautifulSoup(resp.text, 'html.parser')
             questions = soup.find_all('div', class_='courseexamcon-main')
-            
             extracted = []
             for q in questions:
                 name_div = q.find('div', class_='name')
                 if not name_div: continue
-                
-                options_text, answers_text = [], []
+                opts, ans = [], []
                 for ipt in q.select('input'):
                     txt_span = ipt.find_next('span', class_='txt')
                     if txt_span:
                         val = txt_span.get_text(strip=True)
-                        options_text.append(val)
-                        if ipt.has_attr('checked'):
-                            answers_text.append(val)
-                
-                # 题型判断
-                if len(answers_text) > 1: q_type = "多选题"
-                elif any(word in "".join(answers_text) for word in ["正确", "错误"]): q_type = "判断题"
-                else: q_type = "单选题"
-                    
-                extracted.append({
-                    "Course": course_name,
-                    "Type": q_type, 
-                    "Content": name_div.get_text(strip=True), 
-                    "options": options_text, 
-                    "Answers": answers_text
-                })
+                        opts.append(val)
+                        if ipt.has_attr('checked'): ans.append(val)
+                q_type = "多选题" if len(ans) > 1 else ("判断题" if any(w in "".join(ans) for w in ["正确", "错误"]) else "单选题")
+                extracted.append({"Course": course_name, "Type": q_type, "Content": name_div.get_text(strip=True), "options": opts, "Answers": ans})
             return extracted
-        except Exception:
-            return []
+        except: return []
 
 # ========================================================
 # 4. Streamlit UI
 # ========================================================
 st.set_page_config(page_title="粟湾/如仁题库中心", layout="wide")
 
+# 左侧批量账户解析
 with st.sidebar:
-    st.header("账户设置")
-    u_acc = st.text_input("登录账号")
-    u_pwd = st.text_input("登录密码", type="password")
-    st.divider()
-    st.info("💡 建议：如果登录反复失败，请尝试在浏览器中重新登录该网站以解除可能的临时锁定。")
+    st.header("批量账户设置")
+    accounts_raw = st.text_area("格式：账号 密码 (每行一个)", height=200, placeholder="Acconut password")
+    
+    parsed_accounts = []
+    if accounts_raw.strip():
+        for line in accounts_raw.strip().split('\n'):
+            parts = line.split()
+            if len(parts) >= 2:
+                parsed_accounts.append({'u': parts[0], 'p': parts[1]})
+    
+    if parsed_accounts:
+        st.success(f"已识别 {len(parsed_accounts)} 个账户")
+        selected_acc_idx = st.selectbox("当前使用的同步账户", range(len(parsed_accounts)), format_func=lambda x: parsed_accounts[x]['u'])
+        active_acc = parsed_accounts[selected_acc_idx]
+    else:
+        st.error("请输入至少一个有效账户")
+        active_acc = None
 
 st.title("粟湾/如仁题库中心")
 
 current_conf = load_courses()
-t_sync, t_view, t_manage = st.tabs(["题库同步更新", "题库在线浏览", "课程管理设置"])
+tab_sync, tab_view, tab_manage = st.tabs(["题库同步更新", "题库在线浏览", "系统管理设置"])
 
 # --- Tab 1: 同步 ---
-with t_sync:
+with tab_sync:
     st.subheader("抓取新题目")
     if not current_conf:
-        st.warning("请先在课程管理中添加课程。")
+        st.warning("请先在系统管理中添加课程。")
     else:
-        sel_name = st.selectbox("请选择要同步的课程", list(current_conf.keys()))
-        target_u = current_conf[sel_name]
-        
-        if st.button("开始同步更新", type="primary"):
-            if not u_acc or not u_pwd:
-                st.error("请先输入账号密码！")
+        sel_name = st.selectbox("目标课程", list(current_conf.keys()))
+        if st.button("开始同步", type="primary"):
+            if not active_acc:
+                st.error("请先设置左侧账户")
             else:
-                scr = AutoExamScraper(u_acc, u_pwd)
-                with st.spinner(f"正在同步【{sel_name}】..."):
-                    ok, msg = scr.login()
+                scraper = AutoExamScraper(active_acc)
+                with st.spinner(f"正在使用 {active_acc['u']} 同步中..."):
+                    ok, msg = scraper.login()
                     if ok:
-                        new_items = scr.fetch_data(target_u, sel_name)
+                        items = scraper.fetch_data(current_conf[sel_name], sel_name)
                         db = load_data()
                         old_keys = {f"{i['Course']}_{i['Content']}" for i in db}
-                        added = [i for i in new_items if f"{i['Course']}_{i['Content']}" not in old_keys]
-                        
+                        added = [i for i in items if f"{i['Course']}_{i['Content']}" not in old_keys]
                         if added:
                             save_data(db + added)
-                            st.success(f"同步成功！新增 {len(added)} 题。")
-                        else:
-                            st.info("未发现新题目。")
-                    else:
-                        st.error(f"登录失败: {msg}")
+                            st.success(f"同步成功！新增 {len(added)} 题")
+                        else: st.info("暂无新题")
+                    else: st.error(f"登录失败: {msg}")
 
-# --- Tab 2: 浏览 ---
-with t_view:
+# --- Tab 2: 浏览与删除 ---
+with tab_view:
     db = load_data()
     if not db:
-        st.info("暂无数据。")
+        st.info("题库为空")
     else:
-        c_filter = st.selectbox("筛选课程", ["全部"] + sorted(list(set(i['Course'] for i in db))))
-        s_key = st.text_input("搜索题目关键词")
+        col_ctrl1, col_ctrl2 = st.columns([1, 1])
+        c_filter = col_ctrl1.selectbox("筛选课程", ["全部"] + sorted(list(set(i['Course'] for i in db))))
+        s_key = col_ctrl2.text_input("搜索关键词")
         
-        filtered = db if c_filter == "全部" else [i for i in db if i['Course'] == c_filter]
-        if s_key:
-            filtered = [i for i in filtered if s_key in i['Content']]
+        # 过滤
+        filtered = []
+        for i in db:
+            if (c_filter == "全部" or i['Course'] == c_filter) and (not s_key or s_key in i['Content']):
+                filtered.append(i)
         
-        show_df = pd.DataFrame([
-            {
-                "序号": idx + 1,
-                "课程": i['Course'],
-                "题型": i['Type'],
-                "题目内容": i['Content'],
-                "选项": " | ".join(i['options']),
-                "答案": "、".join(i['Answers'])
-            } for idx, i in enumerate(filtered)
-        ])
-        
-        st.dataframe(show_df.set_index("序号"), use_container_width=True, height=500)
-        
-        st.divider()
-        f_col1, f_col2 = st.columns([3, 1])
-        f_col1.markdown(f"### 📊 统计：当前共计 **{len(filtered)}** 道题目")
-        
-        js_data = json.dumps(filtered, ensure_ascii=False, indent=4)
-        f_col2.download_button("下载当前题库 (JSON)", js_data, f"db_{c_filter}.json", "application/json")
+        # 危险操作区
+        with st.expander("⚠️ 批量删除"):
+            c1, c2 = st.columns(2)
+            if c1.button(f"清空【{c_filter}】的全部题目"):
+                new_db = [i for i in db if i not in filtered]
+                save_data(new_db)
+                st.rerun()
+            if c2.button("清空本地所有题库数据"):
+                save_data([])
+                st.rerun()
 
-# --- Tab 3: 管理 ---
-with t_manage:
-    st.subheader("管理课程清单")
-    
+        # 数据表格与逐行删除
+        for idx, item in enumerate(filtered):
+            with st.container():
+                col_info, col_del = st.columns([9, 1])
+                col_info.markdown(f"**{idx+1}. [{item['Course']}]** {item['Content']}")
+                col_info.caption(f"选项: {' | '.join(item['options'])}  \n答案: {', '.join(item['Answers'])}")
+                if col_del.button("删除", key=f"del_q_{idx}"):
+                    db.remove(item)
+                    save_data(db)
+                    st.rerun()
+                st.divider()
+        
+        st.markdown(f"**当前显示: {len(filtered)} 题**")
+        js = json.dumps(filtered, ensure_ascii=False, indent=4)
+        st.download_button("下载 JSON", js, f"data_{c_filter}.json")
+
+# --- Tab 3: 管理课程 ---
+with tab_manage:
+    st.subheader("课程列表管理")
     with st.expander("➕ 添加课程"):
-        with st.form("add_form"):
-            n = st.text_input("课程名")
-            l = st.text_input("课程URL")
-            if st.form_submit_button("确认"):
-                if n and l:
-                    current_conf[n] = l
+        with st.form("add_course"):
+            cn, cu = st.text_input("课程名"), st.text_input("URL")
+            if st.form_submit_button("保存"):
+                if cn and cu:
+                    current_conf[cn] = cu
                     save_courses(current_conf)
                     st.rerun()
     
@@ -238,7 +204,7 @@ with t_manage:
         c1, c2, c3 = st.columns([1, 4, 1])
         c1.write(f"**{name}**")
         c2.code(url)
-        if c3.button("删除", key=f"del_{name}"):
+        if c3.button("删除", key=f"del_c_{name}"):
             del current_conf[name]
             save_courses(current_conf)
             st.rerun()
