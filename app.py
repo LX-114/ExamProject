@@ -131,7 +131,7 @@ with t_sync:
                 st.error("请输入账户列表！")
             else:
                 total_new = 0
-                success_details = [] # 用于存储每个账号新增的数量
+                success_details = []
                 progress_text = st.empty()
                 
                 for idx, acc in enumerate(parsed_accounts):
@@ -155,14 +155,13 @@ with t_sync:
                         st.error(f"❌ 账户 {u_acc} 登录失败: {msg}")
                     time.sleep(0.5)
                 
-                # 在红框区域显示详细汇总信息
                 if success_details:
                     summary_msg = "🏁 批量同步任务完成！\n\n" + "\n\n".join(success_details) + f"\n\n**本次共累计新增 {total_new} 道题目。**"
                     progress_text.success(summary_msg)
                 else:
                     progress_text.success(f"🏁 任务结束。本次未发现新题目。")
 
-# --- Tab 2: 浏览与删除 ---
+# --- Tab 2: 浏览与导出 ---
 with t_view:
     db = load_data()
     if not db:
@@ -172,14 +171,28 @@ with t_view:
         c_filter = col_f1.selectbox("筛选课程", ["全部"] + sorted(list(set(i['Course'] for i in db))))
         s_key = col_f2.text_input("搜索题目关键词")
         
+        filtered = db if c_filter == "全部" else [i for i in db if i['Course'] == c_filter]
+        if s_key: filtered = [i for i in filtered if s_key in i['Content']]
+        
+        st.write("")
+        op_col1, op_col2, op_col3 = st.columns([2, 2, 2])
+        
         if c_filter != "全部":
-            if st.button(f"🗑️ 清空【{c_filter}】的所有题库数据"):
+            if op_col1.button(f"🗑️ 清空【{c_filter}】所有数据"):
                 new_db = [i for i in db if i['Course'] != c_filter]
                 save_data(new_db)
                 st.rerun()
         
-        filtered = db if c_filter == "全部" else [i for i in db if i['Course'] == c_filter]
-        if s_key: filtered = [i for i in filtered if s_key in i['Content']]
+        op_col2.markdown(f"#### 📊 统计：当前显示 {len(filtered)} 道题目")
+        
+        js_export = json.dumps(filtered, ensure_ascii=False, indent=4)
+        op_col3.download_button(
+            label="📥 导出题库 (JSON)",
+            data=js_export,
+            file_name=f"{c_filter}.json", # 导出名字与课程名字一致
+            mime="application/json"
+        )
+        st.write("---")
         
         for idx, item in enumerate(filtered):
             with st.container():
@@ -191,7 +204,6 @@ with t_view:
                     save_data(db)
                     st.rerun()
                 st.divider()
-        st.markdown(f"### 📊 统计：当前显示 **{len(filtered)}** 道题目")
 
 # --- Tab 3: 管理 ---
 with t_manage:
