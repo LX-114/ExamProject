@@ -126,7 +126,7 @@ with t_sync:
         st.warning("请添加课程。")
     else:
         sel_name = st.selectbox("请选择要同步的课程", list(current_conf.keys()))
-        if st.button("开始批量同步更新", type="primary"):
+        if st.button("开始同步更新", type="primary"):
             if not parsed_accounts:
                 st.error("请输入账户列表！")
             else:
